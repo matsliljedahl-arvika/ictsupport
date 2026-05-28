@@ -1,0 +1,936 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Ticket, 
+  Search, 
+  Plus, 
+  MessageSquare, 
+  Mail, 
+  Clock, 
+  CheckCircle, 
+  AlertCircle,
+  User,
+  Users,
+  Send,
+  ArrowLeft,
+  Filter,
+  X,
+  Loader2,
+  WifiOff,
+  Database,
+  HelpCircle
+} from 'lucide-react';
+
+// Din unika Google Apps Script Web App URL
+const API_URL = "https://script.google.com/a/macros/arvika.com/s/AKfycbx5Bli2GfETuoaj84C2nBcqzc0JYBlAo77nLlX9U9I5KugSUfYd3BwNJnhjrPXYZeKo/exec";
+
+const MOCK_USERS = [
+  "Anna Andersson (IT)",
+  "Björn Borg (IT)",
+  "Cecilia Carlsson (IT)",
+  "David Dumle (IT)"
+];
+
+const CURRENT_USER = "Anna Andersson (IT)"; // Simulerar inloggad användare
+
+const STATUS_COLORS = {
+  "Nytt": "bg-blue-100 text-blue-800 border-blue-200",
+  "Pågår": "bg-yellow-100 text-yellow-800 border-yellow-200",
+  "Väntar på info": "bg-purple-100 text-purple-800 border-purple-200",
+  "Löst": "bg-green-100 text-green-800 border-green-200"
+};
+
+const PRIORITY_COLORS = {
+  "Låg": "text-gray-500",
+  "Medel": "text-yellow-600",
+  "Hög": "text-red-600 font-bold"
+};
+
+// Fallback testdata om API:et inte kan nås
+const FALLBACK_TICKETS = [
+  {
+    id: "TICK-1001",
+    title: "Projektorn i sal B203 startar inte",
+    description: "När jag försöker starta projektorn blinkar lampan rött och sedan stängs den av. Jag behöver använda den till min lektion kl 13:00.",
+    status: "Pågår",
+    priority: "Hög",
+    reporter: { name: "Eva Lärare", email: "eva.larare@skolan.se" },
+    assignees: ["Anna Andersson (IT)", "Björn Borg (IT)"],
+    createdAt: new Date().toISOString(),
+    history: [
+      { id: "1", type: "system", author: "System", date: new Date().toISOString(), content: "Ärendet skapades via webbformulär." },
+      { id: "2", type: "assignment", author: "Anna Andersson (IT)", date: new Date().toISOString(), content: "Tilldelade ärendet till Anna Andersson (IT), Björn Borg (IT)" }
+    ]
+  }
+];
+
+// --- HUVUDKOMPONENT ---
+export default function App() {
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [isOffline, setIsOffline] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(false);
+  const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard', 'ticket_detail'
+  const [selectedTicketId, setSelectedTicketId] = useState(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+
+  // Läs in data från localStorage om det finns sparat lokalt
+  const getLocalTickets = () => {
+    const local = localStorage.getItem('ikt_tickets');
+    if (local) {
+      try { return JSON.parse(local); } catch(e) { return FALLBACK_TICKETS; }
+    }
+    return FALLBACK_TICKETS;
+  };
+
+  // Spara data till localStorage för att behålla ändringar i offline-läge
+  const saveLocalTickets = (newTickets) => {
+    localStorage.setItem('ikt_tickets', JSON.stringify(newTickets));
+    setTickets(newTickets);
+  };
+
+  // 1. HÄMTA ÄRENDEN (GET)
+  const fetchTickets = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Sätt en timeout på anropet så det inte hänger sig för länge vid blockering
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+      const response = await fetch(API_URL, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error("HTTP-fel: " + response.status);
+      }
+      const data = await response.json();
+      
+      // Spara i localStorage som cache och uppdatera state
+      localStorage.setItem('ikt_tickets', JSON.stringify(data));
+      setTickets(data);
+      setIsOffline(false);
+    } catch (err) {
+      console.error("Fel vid hämtning:", err);
+      
+      // Växla över till lokalt läge
+      const localData = getLocalTickets();
+      setTickets(localData);
+      setIsOffline(true);
+      setError("Kunde inte ansluta till Google-databasen. Appen körs nu i lokalt demoläge.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTickets();
+  }, []);
+
+  // Navigering
+  const viewDashboard = () => {
+    setSelectedTicketId(null);
+    setCurrentView('dashboard');
+    if (!isOffline) fetchTickets(); // Hämta senaste om vi är online
+  };
+
+  const viewTicket = (id) => {
+    setSelectedTicketId(id);
+    setCurrentView('ticket_detail');
+  };
+
+  // 2. SKAPA NYTT ÄRENDE (POST)
+  const handleCreateTicket = async (newTicketData) => {
+    setLoading(true);
+    const ticketId = "TICK-" + Math.floor(1000 + Math.random() * 9000);
+    const newTicket = {
+      id: ticketId,
+      title: newTicketData.title,
+      description: newTicketData.description,
+      status: "Nytt",
+      priority: newTicketData.priority,
+      reporter: {
+        name: newTicketData.reporterName,
+        email: newTicketData.reporterEmail
+      },
+      assignees: [],
+      createdAt: new Date().toISOString(),
+      history: [
+        {
+          id: Date.now().toString(),
+          type: "system",
+          author: "System",
+          date: new Date().toISOString(),
+          content: "Ärendet registrerades i systemet."
+        }
+      ]
+    };
+
+    // Uppdatera lokalt först
+    const updatedTickets = [newTicket, ...tickets];
+    saveLocalTickets(updatedTickets);
+    setIsCreateModalOpen(false);
+
+    if (isOffline) {
+      // Om vi är i offline-läge, stanna här
+      setLoading(false);
+      return;
+    }
+
+    try {
+      await fetch(API_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: {
+          // Vi använder text/plain för att undvika CORS preflight OPTIONS-anrop som GAS inte stödjer
+          "Content-Type": "text/plain", 
+        },
+        body: JSON.stringify({
+          action: "CREATE",
+          ticket: newTicket
+        })
+      });
+
+      // Vänta lite och hämta sedan om från servern för att säkerställa synk
+      setTimeout(() => {
+        fetchTickets();
+      }, 1500);
+
+    } catch (err) {
+      console.error("Fel vid skapande av ärende online:", err);
+      // Vi har redan sparat det lokalt så användaren tappar inte sin inmatning
+      setLoading(false);
+    }
+  };
+
+  // 3. UPPDATERA ÄRENDE (POST)
+  const updateTicket = async (id, updates, historyEntry = null) => {
+    const currentTicket = tickets.find(t => t.id === id);
+    if (!currentTicket) return;
+
+    // Skapa uppdaterad lista lokalt
+    const updatedTickets = tickets.map(ticket => {
+      if (ticket.id === id) {
+        const updatedTicket = { ...ticket, ...updates };
+        if (historyEntry) {
+          const newHistory = ticket.history ? [...ticket.history] : [];
+          newHistory.push({
+            ...historyEntry,
+            id: Date.now().toString(),
+            date: new Date().toISOString()
+          });
+          updatedTicket.history = newHistory;
+        }
+        return updatedTicket;
+      }
+      return ticket;
+    });
+
+    saveLocalTickets(updatedTickets);
+
+    if (isOffline) {
+      return; // Stoppa här om vi kör lokalt
+    }
+
+    try {
+      await fetch(API_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: {
+          "Content-Type": "text/plain",
+        },
+        body: JSON.stringify({
+          action: "UPDATE_TICKET",
+          ticketId: id,
+          updates: updates,
+          historyEntry: historyEntry ? {
+            type: historyEntry.type,
+            author: historyEntry.author,
+            content: historyEntry.content
+          } : null,
+          reporterEmail: currentTicket.reporter?.email,
+          ticketTitle: currentTicket.title
+        })
+      });
+
+      setTimeout(() => {
+        fetchTickets();
+      }, 2000);
+
+    } catch (err) {
+      console.error("Fel vid synkronisering online:", err);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
+      {/* Top Navigation */}
+      <header className="bg-slate-900 text-white p-4 shadow-md flex justify-between items-center">
+        <div className="flex items-center space-x-2">
+          <div className="bg-blue-500 p-2 rounded-lg">
+            <Ticket size={24} className="text-white" />
+          </div>
+          <h1 className="text-xl font-bold tracking-wide">IKT Support <span className="text-blue-400 font-normal">| Skolsystem</span></h1>
+        </div>
+        
+        <div className="flex items-center space-x-3 text-sm">
+          {/* Status-indikator */}
+          {isOffline ? (
+            <span className="flex items-center bg-amber-500/20 text-amber-300 border border-amber-500/30 px-3 py-1 rounded-full text-xs font-medium">
+              <WifiOff size={12} className="mr-1.5" /> Lokalt demoläge
+            </span>
+          ) : (
+            <span className="flex items-center bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded-full text-xs font-medium">
+              <Database size={12} className="mr-1.5" /> Ansluten till Google Sheets
+            </span>
+          )}
+
+          <button 
+            onClick={fetchTickets}
+            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded transition-colors"
+            title="Synkronisera med Google Kalkylark"
+          >
+            Synka ↻
+          </button>
+        </div>
+      </header>
+
+      {/* Error / Offline Banner */}
+      {error && (
+        <div className="bg-amber-50 border-b border-amber-200 p-4 text-amber-950 text-sm">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start">
+              <AlertCircle size={18} className="mr-2.5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold">{error}</span> 
+                <p className="text-xs text-amber-800 mt-1">Ändringar sparas i webbläsaren, men skickas inte till Google Sheets förrän anslutningen är fixad.</p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-3 self-end sm:self-auto">
+              <button 
+                onClick={() => setShowInstructions(!showInstructions)} 
+                className="text-xs font-semibold underline text-amber-800 hover:text-amber-950 flex items-center"
+              >
+                <HelpCircle size={14} className="mr-1" /> Visa hur du fixar felet
+              </button>
+              <button onClick={() => setError(null)} className="text-amber-500 hover:text-amber-700">
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Guide för att åtgärda CORS-problem i Google Apps Script */}
+      {showInstructions && (
+        <div className="bg-blue-50 border-b border-blue-200 p-6 text-blue-950 text-sm">
+          <div className="max-w-3xl mx-auto space-y-3">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-base flex items-center text-blue-900">
+                <HelpCircle className="mr-2 text-blue-600" size={18} /> Så här fixar du anslutningsfelet (CORS / Failed to Fetch)
+              </h3>
+              <button onClick={() => setShowInstructions(false)} className="text-blue-500 hover:text-blue-700">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-xs text-blue-800">
+              Webbläsare blockerar anropet eftersom Google kräver inloggning när man försöker nå skriptet. Gör följande steg i ditt Google-konto:
+            </p>
+            <ol className="list-decimal pl-5 space-y-2 text-xs text-blue-900">
+              <li>Öppna ditt Google Kalkylark, gå till <strong>Tillägg (Extensions)</strong> → <strong>Apps Script</strong>.</li>
+              <li>Klicka på den blå knappen <strong>Distribuera (Deploy)</strong> uppe till höger och välj <strong>Hantera distributioner (Manage deployments)</strong>.</li>
+              <li>Klicka på penn-ikonen (Redigera) bredvid din aktiva webbapp.</li>
+              <li>Under <strong>Vem har åtkomst (Who has access)</strong>, ändra från <em>"Bara jag"</em> eller <em>"Alla inom [Skolan]"</em> till <strong>"Vem som helst" (Anyone)</strong>.</li>
+              <li>Klicka på <strong>Distribuera (Deploy)</strong> igen. <em>(Du kommer få en ny URL, men den gamla brukar fortsätta fungera om du bara uppdaterade den aktiva)</em>.</li>
+              <li>Om din skolorganisation blockerar externa anrop helt, kan du behöva köra skriptet från ett privat Google-konto (@gmail.com) istället för skolkontot.</li>
+            </ol>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <main className="flex-grow p-4 md:p-6 max-w-7xl mx-auto w-full">
+        {loading && tickets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-96 space-y-4">
+            <Loader2 className="animate-spin text-blue-600" size={48} />
+            <p className="text-gray-500 font-medium">Ansluter till support-databasen...</p>
+          </div>
+        ) : (
+          <>
+            {currentView === 'dashboard' && (
+              <Dashboard 
+                tickets={tickets} 
+                onViewTicket={viewTicket} 
+                onCreateOpen={() => setIsCreateModalOpen(true)}
+              />
+            )}
+            
+            {currentView === 'ticket_detail' && (
+              <TicketDetail 
+                ticket={tickets.find(t => t.id === selectedTicketId)} 
+                onBack={viewDashboard}
+                onUpdate={updateTicket}
+              />
+            )}
+          </>
+        )}
+      </main>
+
+      {/* SKAPA ÄRENDE MODAL */}
+      {isCreateModalOpen && (
+        <CreateTicketModal 
+          onClose={() => setIsCreateModalOpen(false)} 
+          onSubmit={handleCreateTicket} 
+        />
+      )}
+    </div>
+  );
+}
+
+// --- DASHBOARD VY ---
+function Dashboard({ tickets, onViewTicket, onCreateOpen }) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterStatus, setFilterStatus] = useState('Alla');
+
+  const filteredTickets = tickets.filter(ticket => {
+    const titleMatch = ticket.title?.toLowerCase().includes(searchTerm.toLowerCase()) || false;
+    const idMatch = ticket.id?.toLowerCase().includes(searchTerm.toLowerCase()) || false;
+    const matchesSearch = titleMatch || idMatch;
+    const matchesStatus = filterStatus === 'Alla' || ticket.status === filterStatus;
+    return matchesSearch && matchesStatus;
+  });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
+        <h2 className="text-2xl font-bold text-gray-800">Mina & Aktiva Ärenden</h2>
+        <button 
+          onClick={onCreateOpen}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg shadow-sm flex items-center transition-colors font-medium w-full sm:w-auto justify-center"
+        >
+          <Plus size={18} className="mr-2" /> Nytt ärende
+        </button>
+      </div>
+
+      {/* Filter & Sökning */}
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+        <div className="relative flex-grow">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+          <input 
+            type="text" 
+            placeholder="Sök på ärende-ID eller titel..." 
+            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center space-x-2 w-full md:w-auto">
+          <Filter size={18} className="text-gray-500" />
+          <select 
+            className="border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none flex-grow md:flex-grow-0 bg-white"
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+          >
+            <option value="Alla">Alla statusar</option>
+            <option value="Nytt">Nytt</option>
+            <option value="Pågår">Pågår</option>
+            <option value="Väntar på info">Väntar på info</option>
+            <option value="Löst">Löst</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Tabell över ärenden */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600 uppercase tracking-wider">
+                <th className="px-6 py-4 font-semibold">ID</th>
+                <th className="px-6 py-4 font-semibold">Titel</th>
+                <th className="px-6 py-4 font-semibold">Status</th>
+                <th className="px-6 py-4 font-semibold">Prio</th>
+                <th className="px-6 py-4 font-semibold">Användare</th>
+                <th className="px-6 py-4 font-semibold">Tilldelad</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {filteredTickets.map(ticket => (
+                <tr 
+                  key={ticket.id} 
+                  onClick={() => onViewTicket(ticket.id)}
+                  className="hover:bg-blue-50 cursor-pointer transition-colors group"
+                >
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                    {ticket.id}
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-800">
+                    <div className="font-medium group-hover:text-blue-700">{ticket.title}</div>
+                    <div className="text-xs text-gray-500 mt-1 truncate max-w-xs">{ticket.description}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full border ${STATUS_COLORS[ticket.status] || "bg-gray-100 text-gray-800"}`}>
+                      {ticket.status}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <span className={PRIORITY_COLORS[ticket.priority]}>{ticket.priority}</span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    {ticket.reporter?.name || "Okänd"}
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-600">
+                    {ticket.assignees && ticket.assignees.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {ticket.assignees.map((assignee, idx) => (
+                          <span key={idx} className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded text-xs border border-gray-200">
+                            {assignee.split(' ')[0]}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-gray-400 italic">Ej tilldelad</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {filteredTickets.length === 0 && (
+                <tr>
+                  <td colSpan="6" className="px-6 py-8 text-center text-gray-500">
+                    Inga ärenden tillgängliga.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- ÄRENDEVY (DETALJER) ---
+function TicketDetail({ ticket, onBack, onUpdate }) {
+  const [commentText, setCommentText] = useState('');
+  const [emailText, setEmailText] = useState('');
+  const [actionTab, setActionTab] = useState('comment');
+
+  if (!ticket) return null;
+
+  const handleAddComment = () => {
+    if (!commentText.trim()) return;
+    onUpdate(ticket.id, {}, {
+      type: 'comment',
+      author: CURRENT_USER,
+      content: commentText
+    });
+    setCommentText('');
+  };
+
+  const handleSendEmail = (newStatus = null) => {
+    if (!emailText.trim()) return;
+    
+    let updates = {};
+    let statusChangeLog = "";
+
+    if (newStatus) {
+      updates.status = newStatus;
+      statusChangeLog = `\n(Status ändrades till ${newStatus})`;
+    }
+
+    onUpdate(ticket.id, updates, {
+      type: 'email',
+      author: CURRENT_USER,
+      content: `${emailText}${statusChangeLog}`
+    });
+    
+    setEmailText('');
+    setActionTab('comment');
+  };
+
+  const handleStatusChange = (newStatus) => {
+    if (ticket.status === newStatus) return;
+    onUpdate(ticket.id, { status: newStatus }, {
+      type: 'status',
+      author: CURRENT_USER,
+      content: `Ändrade status från ${ticket.status} till ${newStatus}`
+    });
+  };
+
+  const toggleAssignee = (user) => {
+    const isAssigned = ticket.assignees?.includes(user) || false;
+    let newAssignees;
+    let logMessage;
+
+    if (isAssigned) {
+      newAssignees = ticket.assignees.filter(u => u !== user);
+      logMessage = `Tog bort tilldelning för ${user}`;
+    } else {
+      newAssignees = [...(ticket.assignees || []), user];
+      logMessage = `Tilldelade ärendet till ${user}`;
+    }
+
+    onUpdate(ticket.id, { assignees: newAssignees }, {
+      type: 'assignment',
+      author: CURRENT_USER,
+      content: logMessage
+    });
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return "";
+    const options = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+    return new Date(dateString).toLocaleDateString('sv-SE', options);
+  };
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto pb-12">
+      <button 
+        onClick={onBack}
+        className="flex items-center text-gray-600 hover:text-blue-600 transition-colors font-medium"
+      >
+        <ArrowLeft size={20} className="mr-2" /> Tillbaka till översikten
+      </button>
+
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-gray-100 pb-4 mb-4 gap-4">
+          <div>
+            <div className="flex items-center space-x-3 mb-1">
+              <h2 className="text-2xl font-bold text-gray-900">{ticket.title}</h2>
+              <span className="text-gray-400 font-mono text-sm">#{ticket.id}</span>
+            </div>
+            <div className="text-sm text-gray-500 flex items-center space-x-4">
+              <span className="flex items-center"><Clock size={14} className="mr-1" /> Skapat {formatDate(ticket.createdAt)}</span>
+              <span className="flex items-center"><AlertCircle size={14} className="mr-1" /> Prio: <span className={`ml-1 ${PRIORITY_COLORS[ticket.priority]}`}>{ticket.priority}</span></span>
+            </div>
+          </div>
+          
+          {/* Status Väljare */}
+          <div className="flex items-center bg-gray-50 border border-gray-200 rounded-lg p-1">
+            <span className="text-sm text-gray-600 px-3 font-medium">Status:</span>
+            <select 
+              className={`border-0 rounded-md py-1.5 pl-3 pr-8 font-semibold cursor-pointer outline-none ring-0 ${STATUS_COLORS[ticket.status] || "bg-gray-100"}`}
+              value={ticket.status}
+              onChange={(e) => handleStatusChange(e.target.value)}
+            >
+              <option value="Nytt" className="bg-white text-gray-900">Nytt</option>
+              <option value="Pågår" className="bg-white text-gray-900">Pågår</option>
+              <option value="Väntar på info" className="bg-white text-gray-900">Väntar på info</option>
+              <option value="Löst" className="bg-white text-gray-900">Löst</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="md:col-span-2 space-y-6">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Ärendebeskrivning</h3>
+              <p className="text-gray-800 bg-gray-50 p-4 rounded-lg border border-gray-100 whitespace-pre-wrap leading-relaxed">
+                {ticket.description}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            {/* Anmälare */}
+            <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3 flex items-center">
+                <User size={16} className="mr-2" /> Anmälare
+              </h3>
+              <div className="space-y-1">
+                <div className="font-medium text-gray-900">{ticket.reporter?.name || "Okänd"}</div>
+                <a href={`mailto:${ticket.reporter?.email}`} className="text-sm text-blue-600 hover:underline break-all">
+                  {ticket.reporter?.email}
+                </a>
+              </div>
+            </div>
+
+            {/* Tekniker */}
+            <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3 flex items-center">
+                <Users size={16} className="mr-2" /> Tilldelade tekniker
+              </h3>
+              <div className="space-y-2 mb-3">
+                {!ticket.assignees || ticket.assignees.length === 0 ? (
+                  <div className="text-sm text-gray-500 italic">Ingen tekniker tilldelad ännu.</div>
+                ) : (
+                  ticket.assignees.map((assignee, idx) => (
+                    <div key={idx} className="flex items-center justify-between bg-white p-2 border border-gray-200 rounded text-sm text-gray-800">
+                      <span>{assignee}</span>
+                      <button onClick={() => toggleAssignee(assignee)} className="text-gray-400 hover:text-red-500 font-bold">
+                        &times;
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+              
+              <div className="relative">
+                <select 
+                  className="w-full text-sm border border-gray-300 rounded p-2 outline-none focus:border-blue-500 bg-white"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      toggleAssignee(e.target.value);
+                      e.target.value = "";
+                    }
+                  }}
+                  defaultValue=""
+                >
+                  <option value="" disabled>+ Lägg till tekniker...</option>
+                  {MOCK_USERS.filter(u => !ticket.assignees?.includes(u)).map(u => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        
+        {/* Åtgärder */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-[500px]">
+          <div className="flex border-b border-gray-200 bg-gray-50 rounded-t-xl">
+            <button 
+              className={`flex-1 py-3 text-sm font-medium flex justify-center items-center ${actionTab === 'comment' ? 'text-blue-600 bg-white border-t-2 border-t-blue-600 border-r border-gray-200' : 'text-gray-500 hover:bg-gray-100 border-t-2 border-t-transparent border-r border-gray-200'}`}
+              onClick={() => setActionTab('comment')}
+            >
+              <MessageSquare size={16} className="mr-2" /> Intern kommentar
+            </button>
+            <button 
+              className={`flex-1 py-3 text-sm font-medium flex justify-center items-center ${actionTab === 'email' ? 'text-blue-600 bg-white border-t-2 border-t-blue-600' : 'text-gray-500 hover:bg-gray-100 border-t-2 border-t-transparent'}`}
+              onClick={() => setActionTab('email')}
+            >
+              <Mail size={16} className="mr-2" /> E-post till användare
+            </button>
+          </div>
+
+          <div className="p-4 flex-grow flex flex-col">
+            {actionTab === 'comment' && (
+              <div className="flex flex-col h-full">
+                <p className="text-sm text-gray-500 mb-2">Lägg till en intern anteckning. Användaren ser inte detta.</p>
+                <textarea 
+                  className="flex-grow w-full border border-gray-300 rounded-lg p-3 resize-none focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder="Skriv din kommentar här..."
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                />
+                <div className="mt-4 flex justify-end">
+                  <button 
+                    onClick={handleAddComment}
+                    disabled={!commentText.trim()}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium flex items-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <Plus size={18} className="mr-2" /> Lägg till i historik
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {actionTab === 'email' && (
+              <div className="flex flex-col h-full">
+                <div className="mb-3 bg-blue-50 text-blue-800 p-3 rounded border border-blue-100 text-sm flex">
+                  <AlertCircle size={16} className="mr-2 mt-0.5 flex-shrink-0" />
+                  <div>Detta skickar ett faktiskt e-postmeddelande via Gmail till <strong>{ticket.reporter?.email}</strong>.</div>
+                </div>
+                <textarea 
+                  className="flex-grow w-full border border-gray-300 rounded-lg p-3 resize-none focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder={`Hej ${ticket.reporter?.name?.split(' ')[0] || "mottagare"},\n\nAngående ditt ärende...`}
+                  value={emailText}
+                  onChange={(e) => setEmailText(e.target.value)}
+                />
+                <div className="mt-4 flex flex-col sm:flex-row justify-between items-center gap-3">
+                  <span className="text-xs text-gray-500">Kopplas automatiskt till ärende #{ticket.id}.</span>
+                  <div className="flex space-x-2 w-full sm:w-auto">
+                    <button 
+                      onClick={() => handleSendEmail()}
+                      disabled={!emailText.trim()}
+                      className="flex-1 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 px-4 py-2 rounded-lg font-medium flex items-center justify-center disabled:opacity-50 transition-colors"
+                    >
+                      <Send size={16} className="mr-2" /> Skicka
+                    </button>
+                    <button 
+                      onClick={() => handleSendEmail('Löst')}
+                      disabled={!emailText.trim()}
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center disabled:opacity-50 transition-colors"
+                    >
+                      <CheckCircle size={16} className="mr-2" /> Skicka & Lös
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Historik */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 h-[500px] flex flex-col">
+          <div className="p-4 border-b border-gray-100 bg-gray-50 rounded-t-xl">
+            <h3 className="font-semibold text-gray-800 flex items-center">
+              <Clock size={18} className="mr-2 text-gray-500" /> Händelselogg
+            </h3>
+          </div>
+          <div className="p-4 flex-grow overflow-y-auto bg-slate-50">
+            {ticket.history && ticket.history.length > 0 ? (
+              <div className="space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-300 before:to-transparent">
+                {ticket.history.slice().reverse().map((entry, index) => {
+                  let Icon = MessageSquare;
+                  let iconColor = "text-gray-500";
+                  let borderColor = "border-gray-200";
+
+                  if (entry.type === 'email') { Icon = Mail; iconColor = "text-blue-600"; borderColor = "border-blue-200"; }
+                  if (entry.type === 'status') { Icon = CheckCircle; iconColor = "text-green-600"; borderColor = "border-green-200"; }
+                  if (entry.type === 'assignment') { Icon = Users; iconColor = "text-purple-600"; borderColor = "border-purple-200"; }
+                  if (entry.type === 'system') { Icon = AlertCircle; iconColor = "text-slate-600"; borderColor = "border-slate-300"; }
+
+                  return (
+                    <div key={entry.id || index} className="relative flex items-start gap-4 z-10">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center border shadow-sm shrink-0 bg-white ${borderColor}`}>
+                        <Icon size={18} className={iconColor} />
+                      </div>
+                      <div className={`bg-white p-3 rounded-lg border shadow-sm w-full ${entry.type === 'email' ? 'border-blue-100 bg-blue-50/30' : 'border-gray-200'}`}>
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="font-semibold text-sm text-gray-900">{entry.author}</span>
+                          <span className="text-xs text-gray-500">{formatDate(entry.date)}</span>
+                        </div>
+                        <p className={`text-sm whitespace-pre-wrap ${entry.type === 'system' || entry.type === 'assignment' || entry.type === 'status' ? 'text-gray-600 italic' : 'text-gray-800'}`}>
+                          {entry.content}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-center text-gray-400 py-12 italic text-sm">Hittade ingen händelselogg för detta ärende.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- MODAL: SKAPA NYTT ÄRENDE ---
+function CreateTicketModal({ onClose, onSubmit }) {
+  const [formData, setFormData] = useState({
+    title: "",
+    description: "",
+    priority: "Medel",
+    reporterName: "",
+    reporterEmail: ""
+  });
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleFormSubmit = (e) => {
+    e.preventDefault();
+    if (!formData.title || !formData.description || !formData.reporterEmail) return;
+    onSubmit(formData);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+          <h3 className="text-xl font-bold text-gray-900 flex items-center">
+            <Plus className="mr-2 text-blue-600" size={20} /> Registrera nytt ärende
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X size={20} />
+          </button>
+        </div>
+        
+        <form onSubmit={handleFormSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Ärendetitel *</label>
+            <input 
+              type="text" 
+              name="title"
+              required
+              className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="T.ex. Problem med smartboard i klassrum 4B"
+              value={formData.title}
+              onChange={handleInputChange}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Anmälarens namn</label>
+              <input 
+                type="text" 
+                name="reporterName"
+                className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="Namn"
+                value={formData.reporterName}
+                onChange={handleInputChange}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">E-postadress *</label>
+              <input 
+                type="email" 
+                name="reporterEmail"
+                required
+                className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="e-post@skolan.se"
+                value={formData.reporterEmail}
+                onChange={handleInputChange}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Prioritet</label>
+              <select 
+                name="priority"
+                className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 bg-white outline-none"
+                value={formData.priority}
+                onChange={handleInputChange}
+              >
+                <option value="Låg">Låg</option>
+                <option value="Medel">Medel</option>
+                <option value="Hög">Hög</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Beskrivning *</label>
+            <textarea 
+              name="description"
+              required
+              rows={4}
+              className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 outline-none resize-none"
+              placeholder="Beskriv problemet så utförligt du kan..."
+              value={formData.description}
+              onChange={handleInputChange}
+            />
+          </div>
+
+          <div className="pt-4 border-t border-gray-100 flex justify-end space-x-3">
+            <button 
+              type="button" 
+              onClick={onClose} 
+              className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium"
+            >
+              Avbryt
+            </button>
+            <button 
+              type="submit" 
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium"
+            >
+              Spara och skicka bekräftelse
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
